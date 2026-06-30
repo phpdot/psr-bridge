@@ -12,7 +12,7 @@
     "keywords": ["observability", "logging", "psr-3", "monolog", "tracing", "writer"],
     "require": {
         "php": ">=8.4",
-        "phpdot/contracts": "^1.9",
+        "phpdot/contracts": "^1.11",
         "phpdot/container": "^1.0",
         "psr/log": "^3.0"
     },

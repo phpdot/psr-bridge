@@ -11,6 +11,7 @@ declare(strict_types=1);
 
 namespace PHPdot\PsrBridge\Tests;
 
+use PHPdot\Contracts\Logs\EncryptorInterface;
 use PHPdot\Contracts\Logs\WriterInterface;
 use PHPdot\PsrBridge\Psr3Writer;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -280,6 +281,81 @@ final class Psr3WriterTest extends TestCase
     }
 
     // -----------------------------------------------------------------
+    // secure() — encrypt or fail-closed (never plaintext)
+    // -----------------------------------------------------------------
+
+    #[Test]
+    public function aSecureRecordWithoutAnEncryptorIsDroppedNeverPlaintext(): void
+    {
+        $logger = $this->logger();
+
+        (new Psr3Writer($logger))->write([
+            'type' => 'log', 'level' => 'error', 'message' => 'SSN 123-45-6789',
+            'secure' => true, 'context' => ['card' => '4111111111111111'],
+        ]);
+
+        self::assertSame([], $logger->calls, 'fail-closed: nothing forwarded without an encryptor');
+    }
+
+    #[Test]
+    public function aSecureRecordIsForwardedEncryptedWithCorrelationInPlaintext(): void
+    {
+        $logger = $this->logger();
+
+        (new Psr3Writer($logger, $this->encryptor()))->write([
+            'type' => 'log', 'level' => 'error', 'message' => 'SSN 123-45-6789',
+            'channel' => 'auth', 'trace_id' => 't1', 'span_id' => 's1',
+            'secure' => true, 'context' => ['card' => '4111111111111111'],
+        ]);
+
+        self::assertCount(1, $logger->calls);
+        $call = $logger->calls[0];
+        self::assertSame('error', $call['level']);
+        self::assertStringStartsWith('ENC[', $call['message'], 'message is ciphertext');
+        self::assertStringNotContainsString('SSN 123-45-6789', $call['message']);
+        self::assertTrue($call['context']['encrypted']);
+        self::assertSame('auth', $call['context']['channel']);
+        self::assertSame('t1', $call['context']['trace_id']);
+        self::assertArrayNotHasKey('card', $call['context']);
+    }
+
+    #[Test]
+    public function theSecretNeverLeaksInPlaintextAnywhereInTheForwardedCall(): void
+    {
+        $logger = $this->logger();
+
+        (new Psr3Writer($logger, $this->encryptor()))->write([
+            'type' => 'log', 'level' => 'error', 'message' => 'token tok_live_abc123',
+            'secure' => true, 'context' => ['token' => 'tok_live_abc123'],
+        ]);
+
+        self::assertStringNotContainsString('tok_live_abc123', (string) json_encode($logger->calls));
+    }
+
+    #[Test]
+    public function aFailingEncryptorDropsTheRecordAndNeverThrows(): void
+    {
+        $logger    = $this->logger();
+        $encryptor = new class implements EncryptorInterface {
+            public function encrypt(string $plaintext): string
+            {
+                throw new RuntimeException('encryptor unavailable');
+            }
+
+            public function decrypt(string $ciphertext): string
+            {
+                return $ciphertext;
+            }
+        };
+
+        (new Psr3Writer($logger, $encryptor))->write([
+            'type' => 'log', 'level' => 'error', 'message' => 'secret', 'secure' => true,
+        ]);
+
+        self::assertSame([], $logger->calls, 'fail-closed: dropped, never plaintext');
+    }
+
+    // -----------------------------------------------------------------
     // helper
     // -----------------------------------------------------------------
 
@@ -299,6 +375,25 @@ final class Psr3WriterTest extends TestCase
                     'message' => (string) $message,
                     'context' => $context,
                 ];
+            }
+        };
+    }
+
+    /**
+     * A reversible test encryptor that prefixes ENC[...] (base64) — exercises the
+     * writer's encrypt path without depending on a real cipher.
+     */
+    private function encryptor(): EncryptorInterface
+    {
+        return new class implements EncryptorInterface {
+            public function encrypt(string $plaintext): string
+            {
+                return 'ENC[' . base64_encode($plaintext) . ']';
+            }
+
+            public function decrypt(string $ciphertext): string
+            {
+                return (string) base64_decode(substr($ciphertext, 4, -1), true);
             }
         };
     }

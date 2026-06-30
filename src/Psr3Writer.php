@@ -16,9 +16,13 @@ declare(strict_types=1);
  * trace/span correlation ids are always added to the PSR-3 context so every line
  * carries the trace id.
  *
- * NO sampling: every record received is forwarded. The only `try/catch` is
+ * A record flagged `secure()` has its message AND context encrypted with the
+ * injected {@see EncryptorInterface} and forwarded as ciphertext; it is fail-closed
+ * — dropped, never forwarded in plaintext — when no encryptor is configured.
+ *
+ * NO sampling: every other record is forwarded. The only `try/catch` is
  * crash-safety — a misbehaving logger must not bring down the caller or the
- * coroutine-end span flush — never a drop decision.
+ * coroutine-end span flush.
  *
  * @author Omar Hamdan <omar@phpdot.com>
  * @license MIT
@@ -27,6 +31,7 @@ declare(strict_types=1);
 namespace PHPdot\PsrBridge;
 
 use PHPdot\Container\Attribute\Singleton;
+use PHPdot\Contracts\Logs\EncryptorInterface;
 use PHPdot\Contracts\Logs\WriterInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\LogLevel;
@@ -49,9 +54,11 @@ final class Psr3Writer implements WriterInterface
 
     /**
      * @param LoggerInterface $logger The PSR-3 logger every record is forwarded to.
+     * @param EncryptorInterface|null $encryptor Optional encryptor for records flagged secure().
      */
     public function __construct(
         private readonly LoggerInterface $logger,
+        private readonly ?EncryptorInterface $encryptor = null,
     ) {}
 
     /**
@@ -61,9 +68,16 @@ final class Psr3Writer implements WriterInterface
      */
     public function write(array $record): void
     {
-        // Crash-safety only: a logger failure must not crash the caller. This is
-        // NEVER a sampling/drop decision — every record is forwarded.
+        // The only try/catch is crash-safety — a logger failure must not crash the
+        // caller. A secure() record is encrypted, or fail-closed (dropped, never
+        // plaintext) when no encryptor is configured; every other record is forwarded.
         try {
+            if ($this->isSensitive($record)) {
+                $this->writeSensitive($record);
+
+                return;
+            }
+
             if (($record['type'] ?? null) === 'span') {
                 $this->writeSpan($record);
 
@@ -74,6 +88,59 @@ final class Psr3Writer implements WriterInterface
         } catch (Throwable) {
             // Intentionally swallowed — logging/tracing must not bring down the caller.
         }
+    }
+
+    /**
+     * Whether a record is flagged sensitive and must be encrypted (or dropped).
+     *
+     * @param array<string, mixed> $record The record to inspect.
+     *
+     * @return bool True if the record carries a truthy `secure` or `sensitive` marker.
+     */
+    private function isSensitive(array $record): bool
+    {
+        return ($record['secure'] ?? false) === true
+            || ($record['sensitive'] ?? false) === true;
+    }
+
+    /**
+     * Forward a sensitive record with its message AND context encrypted together.
+     *
+     * Fail-closed: with no encryptor configured, or if encryption fails, the record
+     * is dropped — never forwarded in plaintext. Trace correlation stays plaintext.
+     *
+     * @param array<string, mixed> $record The engine record flagged secure().
+     */
+    private function writeSensitive(array $record): void
+    {
+        if ($this->encryptor === null) {
+            return;
+        }
+
+        try {
+            $payload = json_encode(
+                [
+                    'message' => $this->toString($record['message'] ?? null),
+                    'context' => $this->toArray($record['context'] ?? null),
+                ],
+                JSON_THROW_ON_ERROR | JSON_INVALID_UTF8_SUBSTITUTE,
+            );
+
+            $ciphertext = $this->encryptor->encrypt($payload);
+        } catch (Throwable) {
+            return;
+        }
+
+        $this->logger->log(
+            $this->toLevel($record['level'] ?? null),
+            $ciphertext,
+            [
+                'channel'   => $this->toString($record['channel'] ?? null, 'app'),
+                'trace_id'  => $this->toString($record['trace_id'] ?? null),
+                'span_id'   => $this->toString($record['span_id'] ?? null),
+                'encrypted' => true,
+            ],
+        );
     }
 
     /**
