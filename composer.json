@@ -1,0 +1,53 @@
+{
+    "name": "phpdot/psr-bridge",
+    "description": "A thin PSR-3 / Monolog writer for the phpdot observability engine. A peer backend: depends only on the contracts and psr/log — never on tracelog.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Omar Hamdan",
+            "email": "omar@phpdot.com"
+        }
+    ],
+    "keywords": ["observability", "logging", "psr-3", "monolog", "tracing", "writer"],
+    "require": {
+        "php": ">=8.4",
+        "phpdot/contracts": "^1.9",
+        "phpdot/container": "^1.0",
+        "psr/log": "^3.0"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.94",
+        "monolog/monolog": "^3.0",
+        "phpstan/phpstan": "^2.0",
+        "phpstan/phpstan-strict-rules": "^2.0",
+        "phpunit/phpunit": "^11.0"
+    },
+    "suggest": {
+        "monolog/monolog": "A PSR-3 logger to bind as the writer's output (Slack, syslog, files, etc.)"
+    },
+    "autoload": {
+        "psr-4": {
+            "PHPdot\\PsrBridge\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "PHPdot\\PsrBridge\\Tests\\": "tests/"
+        }
+    },
+    "scripts": {
+        "test": "phpunit",
+        "analyse": "phpstan analyse --memory-limit=256M",
+        "cs-fix": "php-cs-fixer fix",
+        "cs-check": "php-cs-fixer fix --dry-run --diff",
+        "check": [
+            "@test",
+            "@analyse",
+            "@cs-check"
+        ]
+    },
+    "config": {
+        "sort-packages": true
+    }
+}
